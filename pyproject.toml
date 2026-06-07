@@ -14,4 +14,4 @@ authors = [
 ]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["jpa"]
