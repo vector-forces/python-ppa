@@ -6,7 +6,7 @@ from unittest import result
 from pydantic import BaseModel, ConfigDict
 from bson import ObjectId, errors
 
-from jpa.config import get_collection, get_framework_logger
+from ppa.config import get_collection, get_framework_logger
 
 T = TypeVar("T", bound=BaseModel)
 F = TypeVar("F", bound=Callable[..., Any])

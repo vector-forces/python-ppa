@@ -28,5 +28,5 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-# Automatically discover the 'jpa' package and its nested subpackages (like mongo)
-include = ["jpa*"]
+# Automatically discover the 'ppa' package and its nested subpackages (like mongo)
+include = ["ppa*"]
