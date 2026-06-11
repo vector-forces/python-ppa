@@ -44,7 +44,7 @@ def document(name: str) -> Callable[[type[DocumentModel]], type[DocumentModel]]:
             **current_encoders
         }
         merged_cfs = {
-            **DEFAULT_DOCUMENT_CONFIG["model_config"],
+            **DEFAULT_DOCUMENT_CONFIG,
             **current_cfs,
             "json_encoders": merged_encoders,
         }
