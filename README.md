@@ -1,6 +1,6 @@
-# python-jpa
+# python-ppa
 
-`python-jpa` is a lightweight, Spring Data JPA-inspired Object-Document Mapper (ODM) for MongoDB built on top of **Python 3.13+**, **Pydantic v2**, and **PyMongo**. 
+`python-ppa` is a lightweight, Spring Data ppa-inspired Object-Document Mapper (ODM) for MongoDB built on top of **Python 3.13+**, **Pydantic v2**, and **PyMongo**. 
 
 It uses advanced Python metaprogramming (`metaclass`) to dynamically generate MongoDB queries at runtime based on method naming conventions or explicit query declarations, drastically reducing boilerplate code.
 
@@ -8,7 +8,7 @@ It uses advanced Python metaprogramming (`metaclass`) to dynamically generate Mo
 
 ## 🚀 Features
 
-* **JPA-Like Repository Pattern:** Declare an interface, and let the metaclass handle query assembly dynamically.
+* **ppa-Like Repository Pattern:** Declare an interface, and let the metaclass handle query assembly dynamically.
 * **Query Naming Conventions:** Instantly supports `find_by_*`, `find_all_by_*`, `exists_by_*`, and `count_by_*` pattern resolutions.
 * **Custom Query Annotations:** Bind complex MongoDB query templates with custom parameter injections using the `@query` decorator.
 * **Data Validation:** Fully powered by Pydantic v2 for robust runtime type checking and parsing.
@@ -22,7 +22,7 @@ It uses advanced Python metaprogramming (`metaclass`) to dynamically generate Mo
 ```text
 .
 ├── README.md
-├── jpa
+├── ppa
 │   ├── __init__.py
 │   ├── config.py         # App bootstrapping, YAML parsing & environment mapping
 │   └── mongo
@@ -35,7 +35,7 @@ It uses advanced Python metaprogramming (`metaclass`) to dynamically generate Mo
 Prerequisites
 • Python 3.13 or higher
 Installation & Virtual Env Setup
-1. Clone the repository and navigate to its root: cd python-jpa
+1. Clone the repository and navigate to its root: cd python-ppa
 2. Spin up a virtual environment and update your pip core dependencies: python3 -m venv venv source venv/bin/activate  # On Windows use: venv\Scripts\activate pip install --upgrade pip
 3. Install the project library dependencies: pip install -r requirements.txt
 ⚙️ Configuration Management
@@ -48,7 +48,7 @@ app:
 2. Environment Profile Configuration (resources/settings-dev.yml)
 mongodb:
   uri: ${MONGO_URI:mongodb://localhost:27017}
-  database: ${MONGO_DB_NAME:jpa_database}
+  database: ${MONGO_DB_NAME:ppa_database}
 
 framework:
   logging:
@@ -59,7 +59,7 @@ framework:
 Here is a quick overview of how you can configure a domain entity and generate auto-implemented interface pipelines:
 1. Define your Document Model
 from pydantic import Field
-from jpa.mongo.interface import DocumentModel, document
+from ppa.mongo.interface import DocumentModel, document
 
 @document(name="users")
 class User(DocumentModel):
@@ -70,7 +70,7 @@ class User(DocumentModel):
 
 2. Declare your Interface Repository
 By extending IRepository[T], method naming patterns are captured and converted into database interactions seamlessly.
-from jpa.mongo.interface import IRepository, query
+from ppa.mongo.interface import IRepository, query
 from typing import List, Optional
 
 class UserRepository(IRepository[User]):
@@ -85,7 +85,7 @@ class UserRepository(IRepository[User]):
     def find_by_email_and_min_age(self, email: str, min_age: int) -> List[User]: ...
 
 3. Execute CRUD Actions
-from jpa.config import close_db_connection
+from ppa.config import close_db_connection
 
 # Initialize repository instance
 user_repo = UserRepository()
