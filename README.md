@@ -95,7 +95,109 @@ framework:
     level: "DEBUG"
 ```
 
-## 📖 Usage Example
+## PostgreSQL Quickstart
+
+The `demo/` folder contains a complete local PostgreSQL verification app.
+
+1. Start PostgreSQL:
+
+```bash
+cd demo
+docker compose up -d
+```
+
+2. Run the demo from the repository root:
+
+```bash
+./venv/bin/python demo/main.py
+```
+
+The demo creates a `users` table and verifies insert, convention queries, a custom SQL query, update, and delete through `ppa.postgres`.
+
+For your own app, create `resources/settings.yml`:
+
+```yaml
+app:
+  profile: ${APP_PROFILE:dev}
+```
+
+Then create `resources/settings-dev.yml`:
+
+```yaml
+postgresql:
+  host: ${POSTGRES_HOST:localhost}
+  port: ${POSTGRES_PORT:5432}
+  database: ${POSTGRES_DB_NAME:ppa_demo}
+  user: ${POSTGRES_USER:ppa_user}
+  password: ${POSTGRES_PASSWORD:ppa_password}
+
+framework:
+  logging:
+    enabled: true
+    level: DEBUG
+```
+
+You can also use a single DSN:
+
+```yaml
+postgresql:
+  dsn: ${POSTGRES_DSN:postgresql://ppa_user:ppa_password@localhost:5432/ppa_demo}
+```
+
+Create the database table before using the repository. `python-ppa` currently maps models to existing tables; it does not run migrations for you.
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    age INTEGER NOT NULL
+);
+```
+
+Define a PostgreSQL-backed entity and repository:
+
+```python
+from ppa.postgres import EntityModel, IRepository, query, table
+
+@table(name="users")
+class User(EntityModel):
+    username: str
+    email: str
+    age: int
+
+class UserRepository(IRepository[User]):
+    def find_by_username(self, username: str) -> User | None: ...
+    def exists_by_username(self, username: str) -> bool: ...
+    def count_by_age(self, age: int) -> int: ...
+    def find_all_by_age(self, age: int) -> list[User]: ...
+
+    @query("SELECT * FROM users WHERE email = ?0 AND age >= ?1")
+    def find_by_email_and_min_age(self, email: str, min_age: int) -> list[User]: ...
+```
+
+Use the repository:
+
+```python
+from ppa.config import close_db_connection
+
+repo = UserRepository()
+
+user_id = repo.save(User(username="pratyush", email="pratyush@example.com", age=25))
+user = repo.find_by_username("pratyush")
+
+print(user.model_dump() if user else None)
+print(repo.exists_by_username("pratyush"))
+print(repo.count_by_age(25))
+print(repo.find_by_email_and_min_age("pratyush@example.com", 21))
+
+repo.update(user_id, {"age": 26})
+repo.delete(user_id)
+
+close_db_connection()
+```
+
+## MongoDB Usage Example
 
 Here is a quick overview of how you can configure a domain entity and generate auto-implemented interface pipelines:
 
@@ -151,26 +253,6 @@ print(f"Found User: {user.email if user else 'Not Found'}")
 
 # Clean up connections on process termination
 close_db_connection()
-```
-
-PostgreSQL repositories follow the same naming conventions with SQL-backed models:
-
-```python
-from pydantic import EmailStr
-from ppa.postgres.interface import EntityModel, IRepository, query, table
-
-@table(name="users")
-class User(EntityModel):
-    username: str
-    email: EmailStr
-    age: int
-
-class UserRepository(IRepository[User]):
-    def find_by_username(self, username: str) -> User | None: ...
-    def count_by_age(self, age: int) -> int: ...
-
-    @query("SELECT * FROM users WHERE email = ?0 AND age >= ?1")
-    def find_by_email_and_min_age(self, email: str, min_age: int) -> list[User]: ...
 ```
 
 ## 📜 License
