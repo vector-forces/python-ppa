@@ -96,15 +96,32 @@ class ConfigSettings:
 
         self._config_data = _load_and_interpolate_yaml(profile_config_path)
         mongodb_config = _as_dict(self._config_data.get("mongodb"), context=f"{profile_filename}.mongodb")
+        postgres_config = _as_dict(
+            self._config_data.get("postgresql", self._config_data.get("postgres")),
+            context=f"{profile_filename}.postgresql",
+        )
 
         # 3. Expose parameters to the framework
         self.mongo_uri = mongodb_config.get("uri")
         self.database_name = mongodb_config.get("database")
+        self.postgres_dsn = self._resolve_postgres_dsn(postgres_config)
+        self.postgres_database_name = postgres_config.get("database") or postgres_config.get("dbname")
 
-        if not isinstance(self.mongo_uri, str) or not self.mongo_uri or not isinstance(self.database_name,
-                                                                                       str) or not self.database_name:
+        has_mongo_config = bool(self.mongo_uri and self.database_name)
+        has_postgres_config = bool(self.postgres_dsn)
+
+        if mongodb_config and not has_mongo_config:
             raise KeyError(
                 f"Invalid configuration format in {profile_filename}. Missing 'mongodb.uri' or 'mongodb.database'.")
+
+        if postgres_config and not has_postgres_config:
+            raise KeyError(
+                f"Invalid configuration format in {profile_filename}. Provide 'postgresql.dsn' or "
+                "'postgresql.host', 'postgresql.database', and 'postgresql.user'.")
+
+        if not has_mongo_config and not has_postgres_config:
+            raise KeyError(
+                f"Invalid configuration format in {profile_filename}. Configure either 'mongodb' or 'postgresql'.")
 
         framework_config = _as_dict(self._config_data.get("framework"), context=f"{profile_filename}.framework")
         framework_logging_config = _as_dict(framework_config.get("logging"),
@@ -114,6 +131,32 @@ class ConfigSettings:
         self.framework_log_format = str(framework_logging_config.get("format", DEFAULT_FRAMEWORK_LOG_FORMAT))
         self.framework_log_date_format = str(
             framework_logging_config.get("date_format", DEFAULT_FRAMEWORK_LOG_DATE_FORMAT))
+
+    @staticmethod
+    def _resolve_postgres_dsn(postgres_config: dict[str, Any]) -> str | None:
+        dsn = postgres_config.get("dsn") or postgres_config.get("uri") or postgres_config.get("url")
+        if isinstance(dsn, str) and dsn:
+            return dsn
+
+        host = postgres_config.get("host")
+        database = postgres_config.get("database") or postgres_config.get("dbname")
+        user = postgres_config.get("user") or postgres_config.get("username")
+        if not host or not database or not user:
+            return None
+
+        parts = [
+            f"host={host}",
+            f"dbname={database}",
+            f"user={user}",
+        ]
+        optional_fields = {
+            "password": postgres_config.get("password"),
+            "port": postgres_config.get("port"),
+            "sslmode": postgres_config.get("sslmode"),
+            "connect_timeout": postgres_config.get("connect_timeout"),
+        }
+        parts.extend(f"{key}={value}" for key, value in optional_fields.items() if value not in (None, ""))
+        return " ".join(parts)
 
 
 def _configure_framework_logger() -> logging.Logger:
@@ -144,11 +187,23 @@ def get_framework_logger(name: str | None = None) -> logging.Logger:
 settings = ConfigSettings()
 framework_logger = _configure_framework_logger()
 framework_logger.info("Bootstrapping framework with active profile [%s]", settings.profile)
-_mongo_client = MongoClient(settings.mongo_uri)
-if not settings or not settings.database_name and not isinstance(settings.database_name, str):
-    raise ValueError("Database name must be provided and it must be a string")
-db = _mongo_client[settings.database_name]
-framework_logger.debug("Mongo client initialized for database [%s]", settings.database_name)
+_mongo_client: MongoClient | None = None
+db = None
+
+
+def _get_mongo_client() -> MongoClient:
+    global _mongo_client, db
+    if not isinstance(settings.mongo_uri, str) or not settings.mongo_uri:
+        raise ValueError("MongoDB URI must be provided before using Mongo repositories")
+    if not isinstance(settings.database_name, str) or not settings.database_name:
+        raise ValueError("MongoDB database name must be provided before using Mongo repositories")
+
+    if _mongo_client is None:
+        _mongo_client = MongoClient(settings.mongo_uri)
+        db = _mongo_client[settings.database_name]
+        framework_logger.debug("Mongo client initialized for database [%s]", settings.database_name)
+
+    return _mongo_client
 
 
 def value(place_holder: str) -> Any:
@@ -196,10 +251,26 @@ def value(place_holder: str) -> Any:
 
 def get_collection(collection_name: str):
     """Provides repositories access to the shared single client pool."""
+    _get_mongo_client()
     return db[collection_name]
 
 
+def get_postgres_connection():
+    """Creates a PostgreSQL connection using the active profile settings."""
+    if not isinstance(settings.postgres_dsn, str) or not settings.postgres_dsn:
+        raise ValueError("PostgreSQL DSN must be provided before using Postgres repositories")
+
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as exc:
+        raise ImportError("Install psycopg to use PostgreSQL repositories.") from exc
+
+    return psycopg.connect(settings.postgres_dsn, row_factory=dict_row)
+
+
 def close_db_connection():
-    """Gracefully terminates connection pool sockets on shutdown."""
-    framework_logger.debug("Closing MongoDB client connection pool")
-    _mongo_client.close()
+    """Gracefully terminates open framework connection pools."""
+    if _mongo_client is not None:
+        framework_logger.debug("Closing MongoDB client connection pool")
+        _mongo_client.close()
