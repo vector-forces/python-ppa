@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import yaml
@@ -19,23 +20,32 @@ def _detect_resources_dir() -> Path:
     """
     # 1. Honor explicit override if provided
     if env_root := os.getenv("PROJECT_ROOT"):
-        return Path(env_root) / "resources"
+        root = Path(env_root)
+        return root if _settings_file(root).exists() else root / "resources"
 
     # 2. Implicit Discovery: Look at where the application is being executed from
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
-        candidate_dir = parent / "resources"
-        # Verify this directory exists and contains your master settings file
-        if candidate_dir.is_dir() and (candidate_dir / "settings.yml").exists():
-            return candidate_dir
+        for candidate_dir in (parent, parent / "resources"):
+            if _settings_file(candidate_dir).exists():
+                return candidate_dir
 
     # 3. Fallback to package-relative directory if all else fails
     return Path(__file__).resolve().parent / "resources"
 
 
+def _settings_file(directory: Path, stem: str = "settings") -> Path:
+    """Prefer .yaml while retaining support for existing .yml applications."""
+    yaml_path = directory / f"{stem}.yaml"
+    return yaml_path if yaml_path.exists() else directory / f"{stem}.yml"
+
+
 # Establish dynamic path routing based on runtime context
 RESOURCES_DIR = _detect_resources_dir()
 BASE_DIR = RESOURCES_DIR.parent
+# Also load .env beside the discovered application settings, without overriding exports.
+load_dotenv(RESOURCES_DIR / ".env")
+load_dotenv(BASE_DIR / ".env")
 FRAMEWORK_LOGGER_NAME = "framework"
 DEFAULT_FRAMEWORK_LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 DEFAULT_FRAMEWORK_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -61,7 +71,7 @@ def _as_dict(value: Any, *, context: str) -> dict[str, Any]:
 
 
 def _load_and_interpolate_yaml(file_path: Path) -> dict[str, Any]:
-    """Reads a configuration file as raw text, swaps environment placeholders, and parses YAML."""
+    """Parse YAML before substitution so environment values cannot change its structure."""
     if not file_path.exists():
         raise FileNotFoundError(f"Configuration file missing at: {file_path}")
 
@@ -74,16 +84,38 @@ def _load_and_interpolate_yaml(file_path: Path) -> dict[str, Any]:
         # Pull from live environment parameters; defer to fallback if empty
         return os.getenv(env_var_name, fallback_value)
 
-    # Perform a global substitution across the text body
-    interpolated_content = ENV_VAR_PATTERN.sub(match_replacer, raw_content)
-    loaded = yaml.safe_load(interpolated_content)
-    return _as_dict(loaded, context=str(file_path))
+    def interpolate(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {key: interpolate(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [interpolate(value) for value in node]
+        if isinstance(node, str):
+            result = ENV_VAR_PATTERN.sub(match_replacer, node)
+            if ENV_VAR_PATTERN.fullmatch(node):
+                if result.lower() in ("true", "false"):
+                    return result.lower() == "true"
+                if re.fullmatch(r"-?\d+", result):
+                    return int(result)
+            return result
+        return node
+
+    return _as_dict(interpolate(yaml.safe_load(raw_content)), context=str(file_path))
+
+
+def _merge_config(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class ConfigSettings:
     def __init__(self):
         # 1. Bootstrap: Read the master settings.yml to find the active profile
-        master_config_path = RESOURCES_DIR / "settings.yml"
+        master_config_path = _settings_file(RESOURCES_DIR)
         master_data = _load_and_interpolate_yaml(master_config_path)
         app_config = _as_dict(master_data.get("app"), context="settings.app")
 
@@ -91,10 +123,13 @@ class ConfigSettings:
         self.profile = str(app_config.get("profile", "dev"))
 
         # 2. Profile Loading: Read the target profile file (e.g., settings-dev.yml)
-        profile_filename = f"settings-{self.profile}.yml" if self.profile != "prod" else "settings-prod.yml"
-        profile_config_path = RESOURCES_DIR / profile_filename
-
-        self._config_data = _load_and_interpolate_yaml(profile_config_path)
+        if not re.fullmatch(r"[\w-]+", self.profile):
+            raise ValueError("app.profile must contain only letters, numbers, underscores or hyphens")
+        profile_config_path = _settings_file(RESOURCES_DIR, f"settings-{self.profile}")
+        profile_filename = profile_config_path.name
+        self._config_data = master_data
+        if profile_config_path.exists():
+            self._config_data = _merge_config(master_data, _load_and_interpolate_yaml(profile_config_path))
         mongodb_config = _as_dict(self._config_data.get("mongodb"), context=f"{profile_filename}.mongodb")
         postgres_config = _as_dict(
             self._config_data.get("postgresql", self._config_data.get("postgres")),
@@ -102,8 +137,9 @@ class ConfigSettings:
         )
 
         # 3. Expose parameters to the framework
-        self.mongo_uri = mongodb_config.get("uri")
+        self.mongo_uri = mongodb_config.get("uri") or os.getenv("mongoURI") or os.getenv("MONGO_URI")
         self.database_name = mongodb_config.get("database")
+        self.mongo_options = _as_dict(mongodb_config.get("options"), context="mongodb.options")
         self.postgres_dsn = self._resolve_postgres_dsn(postgres_config)
         self.postgres_database_name = postgres_config.get("database") or postgres_config.get("dbname")
 
@@ -188,6 +224,7 @@ settings = ConfigSettings()
 framework_logger = _configure_framework_logger()
 framework_logger.info("Bootstrapping framework with active profile [%s]", settings.profile)
 _mongo_client: MongoClient | None = None
+_mongo_lock = Lock()
 db = None
 
 
@@ -198,12 +235,12 @@ def _get_mongo_client() -> MongoClient:
     if not isinstance(settings.database_name, str) or not settings.database_name:
         raise ValueError("MongoDB database name must be provided before using Mongo repositories")
 
-    if _mongo_client is None:
-        _mongo_client = MongoClient(settings.mongo_uri)
-        db = _mongo_client[settings.database_name]
-        framework_logger.debug("Mongo client initialized for database [%s]", settings.database_name)
-
-    return _mongo_client
+    with _mongo_lock:
+        if _mongo_client is None:
+            _mongo_client = MongoClient(settings.mongo_uri, **settings.mongo_options)
+            db = _mongo_client[settings.database_name]
+            framework_logger.debug("Mongo client initialized for database [%s]", settings.database_name)
+        return _mongo_client
 
 
 def value(place_holder: str) -> Any:
@@ -251,8 +288,12 @@ def value(place_holder: str) -> Any:
 
 def get_collection(collection_name: str):
     """Provides repositories access to the shared single client pool."""
-    _get_mongo_client()
-    return db[collection_name]
+    return _get_mongo_client()[settings.database_name][collection_name]
+
+
+def ping_mongo() -> None:
+    """Check readiness; propagate PyMongo errors for the application to handle."""
+    _get_mongo_client().admin.command("ping")
 
 
 def get_postgres_connection():
@@ -270,7 +311,11 @@ def get_postgres_connection():
 
 
 def close_db_connection():
-    """Gracefully terminates open framework connection pools."""
-    if _mongo_client is not None:
-        framework_logger.debug("Closing MongoDB client connection pool")
-        _mongo_client.close()
+    """Close at application shutdown, after in-flight requests have completed."""
+    global _mongo_client, db
+    with _mongo_lock:
+        if _mongo_client is not None:
+            framework_logger.debug("Closing MongoDB client connection pool")
+            _mongo_client.close()
+            _mongo_client = None
+            db = None

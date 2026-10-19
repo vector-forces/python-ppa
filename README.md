@@ -60,6 +60,20 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuration Management
 
+Start with the root `settings.yaml` and copy `.env.example` to `.env`. Set
+`mongoURI` (or `MONGO_URI`) and `MONGO_DB_NAME`. Secrets stay outside YAML.
+The loader accepts a single `settings.yaml`, with optional recursively merged
+`settings-<profile>.yaml` overrides. Existing `.yml` files under `resources/`
+remain supported. Use `PROJECT_ROOT` to select an application's configuration
+when several applications share a checkout.
+
+MongoDB pool sizes, timeouts and driver retries are configured in
+`mongodb.options` using PyMongo option names. Call `ping_mongo()` from
+`ppa.config` to verify readiness and call `close_db_connection()` at shutdown
+after requests finish. PyMongo handles transient disconnects; requests during
+an outage can still fail. See [the configuration and lifecycle design](DESIGN.md)
+for API integration, error handling and shutdown behavior.
+
 The framework supports multi-profile YAML configurations with real-time environment substitution syntax (e.g., ${ENV_VAR:default_value}).
 Create a `resources/` directory at the root of your execution workspace and include your application sheets.
 
